@@ -1,4 +1,5 @@
 import os
+import math
 import numpy as np
 import rasterio as rio
 from tqdm import tqdm
@@ -7,13 +8,17 @@ from itertools import product
 import glob
 from modules.config import Config
 from rasterio import windows
+from rasterio.windows import Window
+from rasterio.enums import Resampling, MaskFlags
+from rasterio import Affine
+
+os.environ["GDAL_CACHEMAX"] = "512000000"  # ~512 MB
 
 DTYPE = {
 	rio.uint8: 2**8 - 1,
 	rio.uint16: 2**16 - 1,
 	rio.uint32: 2**32 - 1
 }
-
 
 def join_make(*args):
 	path = os.path.join(*args)
@@ -26,7 +31,7 @@ def easy_write(filename, meta, image, mask):
 		f.write_mask(mask)
 
 #tiles the window of an image by using the specified width and height + overlap in both directions (x, y)
-def get_tiles(meta, transform, width=256, height=256, step_size=256):
+def get_tiles(meta, transform, width=256, height=256, step_size=256, buffer_size=0):
 	ncols, nrows = meta['width'], meta['height']
 	step_size = max(step_size, 1) 
 
@@ -34,15 +39,15 @@ def get_tiles(meta, transform, width=256, height=256, step_size=256):
 	#big_window = windows.Window(col_off=0, row_off=0, width=ncols, height=nrows)
 	for col_off, row_off in steps:
 		#window = windows.Window(col_off=col_off, row_off=row_off, width=width, height=height).intersection(big_window)
-		window = windows.Window(col_off=col_off, row_off=row_off, width=width, height=height)
+		window = windows.Window(col_off=col_off - buffer_size, row_off=row_off - buffer_size, width=width, height=height)
 		win_transform = windows.transform(window, transform)
 		yield window, win_transform
 
 
-
 class Preprocessor:
-	def __init__(self, buffer_size=0, step_size=1024, resample_size=0.3, keep_empty=False, image_extension=".tif"):
+	def __init__(self, buffer_size=0, channel_idx=(1, 2, 3), step_size=1024, resample_size=0.3, keep_empty=False, image_extension=".tif"):
 		self.buffer_size = buffer_size
+		self.channel_idx = channel_idx
 		self.dest_width = 1024
 		self.dest_height = 1024 
 		self.step_size = step_size
@@ -109,32 +114,75 @@ class Preprocessor:
 
 
 	#crops a list of images to the specified width and height. Additionally resampling and channel limiting can be done.
-	def crop(self, buffered, dir_name):
-		image, mask, meta, img_name = buffered
-		for window, win_transform in tqdm(list(get_tiles(meta, meta["transform"], self.dest_width, self.dest_height, self.step_size))):	
-			tile_meta = meta.copy()
-			tile_meta.update({
-				"width" : window.width,
-				"height" : window.height,
-				"transform": win_transform,
-				"dtype" : rio.uint8,
-				"compress": "LZW"
-			})
+	def crop(self, img_path, dir_name):
+		img_name = Path(img_path).stem
 
-			tile = np.zeros((image.shape[0], window.height, window.width), dtype=np.uint8)
-			w = image[:, window.row_off:window.row_off + window.height, window.col_off:window.col_off + window.width]
-			tile[:, :w.shape[1], : w.shape[2]] = w
+		with rio.open(img_path, "r") as f:
+			meta = f.meta.copy()
 
-			mask_tile = np.zeros((window.height, window.width), dtype=np.uint8)
-			m = mask[window.row_off:window.row_off + window.height, window.col_off:window.col_off + window.width]
-			mask_tile[:m.shape[0], :m.shape[1]] = m
-
-			if not self.keep_empty and np.all(mask_tile == 0): continue  
+			x_res, y_res = f.res
 
 			image_path = join_make(self.out_path, dir_name)
-			image_filename = os.path.join(image_path, f"{img_name}_{window.row_off}_{window.col_off}.{self.image_extension}")
-			
-			easy_write(image_filename, tile_meta, tile, mask_tile)
+
+			x_scale = self.resample_size / x_res
+			y_scale = self.resample_size / y_res
+
+			buffer_size = self.buffer_size * x_scale
+
+			if self.buffer_size > 0:
+				transform = meta["transform"]
+
+				meta.update({
+					"height": meta["height"] + 2 * self.buffer_size,
+					"width": meta["width"] + 2 * self.buffer_size,
+					"transform": transform
+				})
+
+			for window, win_transform in tqdm(list(get_tiles(meta, meta["transform"], self.dest_width, self.dest_height, int(self.step_size * x_scale), buffer_size))):	
+				out_shape = (len(self.channel_idx), window.height, window.width)
+
+				if not math.isclose(x_res, self.resample_size, abs_tol=0.01) or not math.isclose(y_res, self.resample_size, abs_tol=0.01):
+					window = Window(
+						col_off = window.col_off,
+						row_off = window.row_off,
+						width = int(window.width * x_scale),
+						height = int(window.height * y_scale)
+					)
+
+					win_transform = win_transform * Affine.scale(
+						x_scale,
+						y_scale
+					)
+
+				tile_meta = meta.copy()
+
+				tile_meta.update({
+					"height" : out_shape[1],
+					"width" : out_shape[2],
+					"transform": win_transform,
+					"count": len(self.channel_idx),
+					"dtype" : rio.uint8,
+					"compress": "LZW"
+				})
+
+				tile = f.read(
+					indexes=tuple(self.channel_idx), 
+					out_shape=out_shape, 
+					window=window, 
+					boundless=True, 
+					resampling=Resampling.bilinear).astype(rio.uint8)
+
+				mask_tile = f.dataset_mask(
+					out_shape=(out_shape[1], out_shape[2]), 
+					window=window, 
+					boundless=True, 
+					resampling=Resampling.nearest).astype(rio.uint8)
+
+				if not self.keep_empty and np.all(mask_tile == 0): continue  
+						
+				image_filename = os.path.join(image_path, f"{img_name}_{window.row_off}_{window.col_off}{self.image_extension}")
+
+				easy_write(image_filename, tile_meta, tile, mask_tile)
 				
 
 	def _buffer(self, img_path) :
@@ -151,15 +199,18 @@ class Preprocessor:
 		for path in img_paths:
 			print(f"Processing image '{Path(path).name}'")
 
-			buffered = self._buffer(path)
-			image, mask, meta, _ = buffered
 
-			if self.buffer_size > 0:
-				buffer_path = join_make(self.out_path, "buffer", dir_name)
-				filename = os.path.join(buffer_path, Path(path).name)
-				easy_write(filename, meta, image, mask)
+
+
+			#buffered = self._buffer(path)
+			#image, mask, meta, _ = buffered
+
+			#if self.buffer_size > 0:
+				#buffer_path = join_make(self.out_path, "buffer", dir_name)
+				#filename = os.path.join(buffer_path, Path(path).name)
+				#easy_write(filename, meta, image, mask)
 			
-			self.crop(buffered, dir_name)
+			self.crop(path, dir_name)
 
 
 def process(config):
@@ -167,7 +218,7 @@ def process(config):
 	img_paths = glob.glob(search_folder)
 	print(f"Found {len(img_paths)} image(s) for preprocessing...")
 
-	processor = Preprocessor(config.buffer_size, config.step_size, config.resample_size, config.keep_empty, config.image_extension)
+	processor = Preprocessor(config.buffer_size, config.channel_idx, config.step_size, config.resample_size, config.keep_empty, config.image_extension)
 	processor(img_paths, config.output_dir, "images")
 
 	if config.target_dir:	

@@ -20,7 +20,7 @@ Project should work for Python versions >=3.8, <3.13
 <img src="./docs/images/from.png" width=400 height=300>
 <img src="./docs/images/to.png" width=400 height=300>
 </p>
-
+---
 
 ## 📥 Installation
 
@@ -45,41 +45,36 @@ You may put both files in the `pretrained` folder. Otherwise you have to change 
 
 ### 2. Install Dependencies
 
-You can install necessary modules via pip or conda. Conda is recommended. The requirements.txt expects CUDA version 11.8. If you have a different CUDA version, replace the corresponding line inside requirements.txt with: \
-`--index-url https://download.pytorch.org/whl/cu124` for CUDA 12.4 \
-`--index-url https://download.pytorch.org/whl/cu126` for CUDA 12.6
+You should install necessary modules via pip. The requirements.txt expects CUDA version 12.6. If you have a different CUDA version, replace the corresponding line inside requirements.txt with: \
+`--index-url https://download.pytorch.org/whl/cu118` for CUDA 11.8 \
+`--index-url https://download.pytorch.org/whl/cu124` for CUDA 12.4 
 
 or remove it completely (CPU only).
-
-#### pip
-
-```
-pip install -r requirements.txt
-```
-
-#### conda
 
 ```
 conda create --name env_name python=3.10 -y
 conda activate env_name
 
-# Choose either pip or conda for package installation:
+# Choose pip for package installation:
 pip install -r requirements.txt
-# OR
-conda install --yes --file requirements.txt
 ```
 
-If at any point you run in an error stating that c10.dll is missing, you'll need to install the Microsoft Visual C++ Redistributable manually.
+If at any point you run in an error stating that c10.dll is missing, you'll need to install the Microsoft Visual C++ Redistributable manually. Additionally, if you are behind a company proxy, pip should be run as follows: 
+```
+pip install --retries 1 --proxy http://user:password@proxy.com:port
+```
+
+Replace `user` and `password` with your credentials, and `proxy.com` and `port` with your company's proxy URL and port number.
 
 ## 🛠️ Usage
 
-GE-SAM offers 4 different processing stages. Parameters for all stages are set in a YAML configuration file (see ./examples/exampleConfig.yaml).
+buildingSAM offers 4 different processing stages. Parameters for all stages are set in a YAML configuration file (see ./examples/exampleConfig.yaml).
 
 ❗**Important**:
 
 - Backslashes in the configuration file will cause errors
 
-### 0. Global
+### 1. Global
 
 `image_extension` defines the file extension used for searching image files in input folders and writing files to disk.
 
@@ -87,9 +82,9 @@ GE-SAM offers 4 different processing stages. Parameters for all stages are set i
 image_extension: .tif # (optional; .tif by default)
 ```
 
-### 1. Preprocessing
+### 2. Preprocessing
 
-The preprocessing stage allows buffering, tiling and resampling images of a given `image_extension` inside the specified `image_dir` and `target_dir`. `buffer_size` defines the width of the buffer in pixels around each input image (padded with 0s) and `step_size` the stepping size in pixels in x- and y-direction when tiling. `resample_size` lets you define the new size in image units of the preprocessed output (e.g. 0.3 → 30cm in EPSG 25832). By default, empty images are discarded and not written to disk. Set keep_empty accordingly.
+The preprocessing stage allows buffering, tiling and resampling images of a given `image_extension` inside the specified `image_dir` and `target_dir`. `buffer_size` defines the width of the buffer in pixels around each input image (padded with 0s) and `step_size` the stepping size in pixels in x- and y-direction when tiling. `channel_idx` allows setting indices to sample 3 channels from. `resample_size` lets you define the new size in image units of the preprocessed output (e.g. 0.3 → 30cm in EPSG 25832). By default, empty images are discarded and not written to disk. Set keep_empty accordingly.
 
 If you want to prevent tiles from overlapping, you can set `step_size` equal to 1024 (SAM's native input size). If your input images are not resized to shape 1024x1024, SAM will do so automatically, which will lead to an increased processing time and generally worse results. It is advised to use preprocessed images for training and inference for best results.
 
@@ -100,6 +95,7 @@ If you want to train a model and you are using the preprocessing stage for your 
 ```
 preprocessor:
   buffer_size: 512     # (optional; 0 by default)
+  channel_idx: [1, 2, 3] # (optional; [1, 2, 3] by default)
   step_size: 256       # (optional: 1024 by default)
   resample_size: 0.5   # (optional: 0.3 by default)
   keep_empty: true     # (optional: False by default)
@@ -120,7 +116,7 @@ python main.py preprocess --config-path myConfig.yaml
 - If you also want to process targets simultaneously, you have to declare a `target_dir`
 - Use the preprocessor to improve training and inference results
 
-### 2. Model
+### 3. Model
 
 The model configuration is used both for training and inference. The LoRA-adapter complexity is controlled by the `rank` parameter (higher → usually better). If you load a pretrained LoRA-adapter via `load_checkpoint_from`, the rank has to match the checkpoint file. Using our pretrained adapter checkpoint (./pretrained/buildingSAM_R512.safetensors), requires you to set the `rank` to 512. If you don't have a NVIDIA-GPU with CUDA Toolkit installed, set `device` to cpu (otherwise set to `cuda`). Performing training and inference on the CPU will increase processing time substantially. Let `load_pth_from` point to the downloaded SAM weights (see prerequisites).
 
@@ -136,11 +132,11 @@ model:
   load_checkpoint_from: ...                     # (optional)
 ```
 
-### 3. Training
+### 4. Training
 
 The training stage allows fine-tuning a LoRA-adapter to a specific use case (binary classification). Inside the configuration you can define hyperparameters for training (`batch_size`, `num_epochs` and `learning_rate`). If you don't want to output tensorboard logs, you can comment `tensorboard_log_dir` out. `save_every_n_epochs` represents the frequency with which checkpoints are written to `model_dir`.
 
-To diversify your training data, GE-SAM offers 7 different training time augmentations. All augmentations have a p-value which describes the probability of an augmentation to be applied to a sample. `RandomSizedCrop` crops a part of the image with a random width and height in range `min_max_height` and then resamples it to a fixed `size`. `HorizontalFlip`, `VerticalFlip`, `RandomRotate90` and `Transpose` are simple geometric augmentations. `RandomBrightnessContrast` will change a sample's brightness and contrast. With `CoarseDropout` a random number of holes in range `num_holes_range` of a random width and height (`hole_height_range`, `hole_width_range`) can be stitched into the sample. Augmentations are optional and applied in the order they appear in the config. You can either remove all of them or only keep a subset.
+To diversify your training data, buildingSAM offers 7 different training time augmentations. All augmentations have a p-value which describes the probability of an augmentation to be applied to a sample. `RandomSizedCrop` crops a part of the image with a random width and height in range `min_max_height` and then resamples it to a fixed `size`. `HorizontalFlip`, `VerticalFlip`, `RandomRotate90` and `Transpose` are simple geometric augmentations. `RandomBrightnessContrast` will change a sample's brightness and contrast. With `CoarseDropout` a random number of holes in range `num_holes_range` of a random width and height (`hole_height_range`, `hole_width_range`) can be stitched into the sample. Augmentations are optional and applied in the order they appear in the config. You can either remove all of them or only keep a subset.
 
 For more information about the augmentation library used, check out [albumentations](https://albumentations.ai/).
 
@@ -201,7 +197,7 @@ python main.py train --config-path myConfig.yaml
 - valDataset is optional. trainDataset is required.
 - Visualization only applies to valDataset.
 
-### 4. Inference
+### 5. Inference
 
 In the inference stage you can apply the fine-tuned LoRA-adapter and SAM model to new data. `output_type` defines if your predictions are served as probabilities or masks. If set to masks, all input images are binarized with a threshold of 127.
 
@@ -230,7 +226,7 @@ python main.py infer --config-path myConfig.yaml
 - test time augmentations lead to better results but increase processing time
 - if you want to perform inference, you need a LoRA adapter checkpoint (.safetensors) in addition to the SAM checkpoint (.pth)
 
-#### 5. Postprocessing
+#### 6. Postprocessing
 
 The postprocessing stage merges images based on their name. `output_type` and `threshold` (8-bit) define if and how probs/masks are calculated. In the case of overlapping pixels, the average is used.
 

@@ -48,11 +48,14 @@ def infer(inference_config, model_config):
 
 	with torch.no_grad():
 		for path in tqdm(imgs):
+			output_path = os.path.join(inference_config.output_dir, Path(path).name)
+			if os.path.exists(output_path): continue
+
 			with rio.open(path, "r") as f: 
 				image = f.read()
 				mask = f.read_masks(1)
 				meta = f.meta.copy() 
-				meta.update({ "count": 1, "compress": 'lzw' })
+				meta.update({ "count": 1, "compress": 'lzw', "nodata": None})
 			
 				pred = np.zeros((1, f.height, f.width))
 	
@@ -74,7 +77,7 @@ def infer(inference_config, model_config):
 
 				pred /= len(transforms) 
 				pred *= 255
-				with rio.open(os.path.join(inference_config.output_dir, Path(path).name), "w", **meta) as result:
+				with rio.open(output_path, "w", **meta) as result:
 					result.write(pred)
 					result.write_mask(mask)
 

@@ -80,6 +80,7 @@ class BaseConfig(ProtoConfig):
 class PreprocessorConfig(BaseConfig):
     target_dir: Optional[DirectoryPath] = Field(default=None, path_type="dir", description="Optional directory (validated if provided)")
     buffer_size: Optional[int] = 0
+    channel_idx: Optional[list[int]] = [1, 2, 3]
     step_size: Optional[int] = 1024
     resample_size: Optional[float] = 0.3
     keep_empty: Optional[bool] = False
@@ -94,6 +95,12 @@ class PreprocessorConfig(BaseConfig):
     def validate_buffer_size(cls, v: int) -> int:
         if v < 0:
             raise ValueError("buffer_size must be >= 0")
+        return v
+
+    @field_validator("channel_idx")
+    def validate_channel_idx(cls, v: list[int]) -> list[int]:
+        if len(v) <= 0:
+            raise ValueError("channel_idx length must be > 0")
         return v
 
     @field_validator("step_size")
